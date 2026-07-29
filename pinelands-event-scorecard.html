@@ -320,13 +320,16 @@ function postToSheet(entry){
   // Build a flat payload the Sheet can log directly
   var payload = { ts: entry.ts, event: entry.event, who: entry.who, total: entry.total, comments: entry.comments };
   SEGMENTS.forEach(function(n){ payload[n] = entry.scores[n] || ''; });
-  // text/plain avoids a CORS preflight against Apps Script
+  // Apps Script /exec returns a 302 redirect to googleusercontent.com.
+  // A cors fetch can't follow that and fails silently, so we send a
+  // "simple" no-cors request. The response is opaque (can't be read),
+  // but the script still runs and writes the row + sends the email.
   return fetch(SHEET_ENDPOINT, {
     method: 'POST',
-    mode: 'cors',
+    mode: 'no-cors',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify(payload)
-  }).then(function(r){ if(!r.ok) throw new Error('bad status'); return r; });
+  });
 }
 
 function resetForm(){
