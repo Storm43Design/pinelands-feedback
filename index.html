@@ -160,11 +160,6 @@
   <div class="club">Pinelands Toastmasters · Club 3888</div>
 </header>
 
-<div class="tabs">
-  <div class="tab active" id="tabForm" onclick="showView('form')">Fill in scorecard</div>
-  <div class="tab" id="tabDash" onclick="showView('dash')">Exco dashboard</div>
-</div>
-
 <!-- ============ FORM ============ -->
 <div class="wrap" id="viewForm">
   <div class="card">
@@ -199,29 +194,6 @@
     <p class="hint" id="submitHint">Your response is sent to the club's shared results sheet. Nothing else needed — thank you for the feedback!</p>
   </div>
   <div class="foot">Pinelands Toastmasters · District 74 · Division C · Area C02</div>
-</div>
-
-<!-- ============ DASHBOARD ============ -->
-<div class="wrap" id="viewDash" style="display:none">
-  <div class="card" id="dashCard">
-    <div class="dash-empty" id="dashEmpty">No scorecards yet. Submissions will appear here.</div>
-    <div id="dashContent" style="display:none">
-      <div class="stat-row">
-        <div class="stat"><div class="n" id="stCount">0</div><div class="l">Responses</div></div>
-        <div class="stat"><div class="n" id="stAvg">0</div><div class="l">Avg / segment</div></div>
-        <div class="stat"><div class="n" id="stTotal">0</div><div class="l">Avg total</div></div>
-      </div>
-      <h3 style="font-size:15px;margin:18px 0 4px;color:var(--navy)">Average by segment</h3>
-      <div id="barList"></div>
-      <h3 style="font-size:15px;margin:22px 0 4px;color:var(--navy)">Comments</h3>
-      <div id="commentList"></div>
-      <div class="dash-actions">
-        <button onclick="exportCSV()">Export CSV</button>
-        <button class="danger" onclick="clearAll()">Clear all data</button>
-      </div>
-    </div>
-  </div>
-  <div class="foot">This tab shows only responses from <b>this device</b>. The full Exco dashboard — every phone's response, averages and comments — lives in the shared Google Sheet.</div>
 </div>
 
 <div class="toast" id="toast">Scorecard submitted — thank you!</div>
@@ -311,24 +283,43 @@ function submitCard(){
     showToast('Saved on this device (offline). It will need re-sending.');
   }).then(function(){
     btn.disabled = false; btn.textContent = 'Submit scorecard';
-    renderDash();
   });
 }
 
 function postToSheet(entry){
   if(!SHEET_ENDPOINT){ return Promise.reject('no endpoint'); }
-  // Build a flat payload the Sheet can log directly
   var payload = { ts: entry.ts, event: entry.event, who: entry.who, total: entry.total, comments: entry.comments };
   SEGMENTS.forEach(function(n){ payload[n] = entry.scores[n] || ''; });
-  // Apps Script /exec returns a 302 redirect to googleusercontent.com.
-  // A cors fetch can't follow that and fails silently, so we send a
-  // "simple" no-cors request. The response is opaque (can't be read),
-  // but the script still runs and writes the row + sends the email.
-  return fetch(SHEET_ENDPOINT, {
-    method: 'POST',
-    mode: 'no-cors',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(payload)
+
+  // Post via a hidden iframe + form. The browser treats this as an ordinary
+  // form submission, so there is no CORS check and Apps Script's redirect is
+  // followed normally — the script runs, writes the row and sends the email.
+  return new Promise(function(resolve){
+    var iframeName = 'ptm_sink_' + Date.now();
+    var iframe = document.createElement('iframe');
+    iframe.name = iframeName;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = SHEET_ENDPOINT;
+    form.target = iframeName;
+
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'payload';
+    input.value = JSON.stringify(payload);
+    form.appendChild(input);
+
+    document.body.appendChild(form);
+    form.submit();
+
+    // We can't read the cross-origin response, so resolve shortly after submit.
+    setTimeout(function(){
+      try { document.body.removeChild(form); document.body.removeChild(iframe); } catch(e){}
+      resolve();
+    }, 1500);
   });
 }
 
@@ -347,94 +338,7 @@ function load(){
 }
 function save(a){ localStorage.setItem(STORE_KEY, JSON.stringify(a)); }
 
-/* ---------- DASHBOARD ---------- */
-function renderDash(){
-  var all = load();
-  var empty = document.getElementById('dashEmpty');
-  var content = document.getElementById('dashContent');
-  if(all.length === 0){ empty.style.display='block'; content.style.display='none'; return; }
-  empty.style.display='none'; content.style.display='block';
-
-  document.getElementById('stCount').textContent = all.length;
-
-  // per-segment averages
-  var sums = {}, counts = {};
-  SEGMENTS.forEach(function(n){ sums[n]=0; counts[n]=0; });
-  var grandTotal = 0, grandTotalCount = 0;
-  all.forEach(function(e){
-    SEGMENTS.forEach(function(n){
-      if(e.scores[n]){ sums[n]+=e.scores[n]; counts[n]++; }
-    });
-    grandTotal += e.total; grandTotalCount++;
-  });
-
-  var overallVals = [];
-  var barHtml = '';
-  SEGMENTS.forEach(function(n){
-    var avg = counts[n] ? (sums[n]/counts[n]) : 0;
-    if(counts[n]) overallVals.push(avg);
-    var pct = (avg/5)*100;
-    barHtml += '<div class="bar-seg"><div class="bl"><span>'+n+'</span><b>'+(avg?avg.toFixed(1):'—')+'</b></div>'
-             + '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div></div>';
-  });
-  document.getElementById('barList').innerHTML = barHtml;
-
-  var segAvg = overallVals.length ? (overallVals.reduce(function(a,b){return a+b;},0)/overallVals.length) : 0;
-  document.getElementById('stAvg').textContent = segAvg.toFixed(1);
-  document.getElementById('stTotal').textContent = grandTotalCount ? Math.round(grandTotal/grandTotalCount) : 0;
-
-  // comments (newest first)
-  var cHtml = '';
-  all.slice().reverse().forEach(function(e){
-    if(e.comments){
-      var d = new Date(e.ts);
-      cHtml += '<div class="comment">'+escapeHtml(e.comments)
-             + '<div class="meta">— '+escapeHtml(e.who)+' · total '+e.total+' · '+d.toLocaleDateString()+'</div></div>';
-    }
-  });
-  document.getElementById('commentList').innerHTML = cHtml || '<div class="dash-empty" style="padding:12px">No written comments yet.</div>';
-}
-
-function exportCSV(){
-  var all = load();
-  if(all.length===0){ alert('Nothing to export yet.'); return; }
-  var head = ['Timestamp','Event','Name','Total'].concat(SEGMENTS).concat(['Comments']);
-  var rows = [head];
-  all.forEach(function(e){
-    var r = [e.ts, e.event||'', e.who, e.total];
-    SEGMENTS.forEach(function(n){ r.push(e.scores[n]||''); });
-    r.push(e.comments||'');
-    rows.push(r);
-  });
-  var csv = rows.map(function(r){
-    return r.map(function(c){
-      c = String(c).replace(/"/g,'""');
-      return /[",\n]/.test(c) ? '"'+c+'"' : c;
-    }).join(',');
-  }).join('\n');
-  var blob = new Blob([csv], {type:'text/csv'});
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'pinelands-scorecards-'+new Date().toISOString().slice(0,10)+'.csv';
-  a.click();
-}
-
-function clearAll(){
-  if(confirm('Delete all saved scorecards on this device? This cannot be undone.')){
-    localStorage.removeItem(STORE_KEY);
-    renderDash();
-  }
-}
-
 /* ---------- HELPERS ---------- */
-function showView(v){
-  document.getElementById('viewForm').style.display = v==='form'?'block':'none';
-  document.getElementById('viewDash').style.display = v==='dash'?'block':'none';
-  document.getElementById('tabForm').classList.toggle('active', v==='form');
-  document.getElementById('tabDash').classList.toggle('active', v==='dash');
-  if(v==='dash') renderDash();
-  window.scrollTo(0,0);
-}
 function showToast(msg){
   var t = document.getElementById('toast');
   if(msg) t.textContent = msg;
@@ -446,7 +350,6 @@ function escapeHtml(s){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
   });
 }
-renderDash();
 </script>
 </body>
 </html>
